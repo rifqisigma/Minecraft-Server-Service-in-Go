@@ -34,6 +34,11 @@ func (h *BedrockHandler) CreateWorld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := utils.ValidateReq(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	req.Creator = claims.UserID
 	if err := h.bduc.CreateServer(&req); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -52,9 +57,9 @@ func (h *BedrockHandler) DeleteWorld(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
-	if err := h.bduc.DeleteWorld(claims.UserID, paramsName); err != nil {
+	if err := h.bduc.DeleteWorld(claims.UserID, paramsWorld); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -84,9 +89,9 @@ func (h *BedrockHandler) StopWorld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
-	if err := h.bduc.StopServer(paramsName); err != nil {
+	if err := h.bduc.StopServer(paramsWorld); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -104,6 +109,7 @@ func (h *BedrockHandler) EditWorld(w http.ResponseWriter, r *http.Request) {
 
 	params := mux.Vars(r)
 	paramsId, err := strconv.ParseUint(params["id"], 10, 64)
+	paramsWorld := params["world"]
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -115,8 +121,12 @@ func (h *BedrockHandler) EditWorld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := utils.ValidateReq(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	req.Creator = claims.UserID
-	if err := h.bduc.EditWorld(&req, uint(paramsId)); err != nil {
+	if err := h.bduc.EditWorld(&req, uint(paramsId), paramsWorld); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -134,9 +144,9 @@ func (h *BedrockHandler) SendCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
-	if err := h.bduc.SendCommand(paramsName, req.CMD); err != nil {
+	if err := h.bduc.SendCommandforAPI(paramsWorld, req.CMD); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -172,9 +182,9 @@ func (h *BedrockHandler) KickPlayer(w http.ResponseWriter, r *http.Request) {
 
 func (h *BedrockHandler) GetPermissionPlayer(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
-	response, err := h.bduc.GetPermissionPlayer(paramsName)
+	response, err := h.bduc.GetPermissionPlayer(paramsWorld)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -195,9 +205,9 @@ func (h *BedrockHandler) GetWorlds(w http.ResponseWriter, r *http.Request) {
 
 func (h *BedrockHandler) GetWorldAndPlayers(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
-	response, err := h.bduc.GetWorldAndPlayers(paramsName)
+	response, err := h.bduc.GetWorldAndPlayers(paramsWorld)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -208,14 +218,14 @@ func (h *BedrockHandler) GetWorldAndPlayers(w http.ResponseWriter, r *http.Reque
 
 func (h *BedrockHandler) CreateOrUpdatePermissionPlayer(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
 	var req dto.PermissionPlayer
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.bduc.CreateOrUpdatePermissions(&req, paramsName); err != nil {
+	if err := h.bduc.CreateOrUpdatePermissions(&req, paramsWorld); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -225,10 +235,10 @@ func (h *BedrockHandler) CreateOrUpdatePermissionPlayer(w http.ResponseWriter, r
 
 func (h *BedrockHandler) DeletePermissionPlayer(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 	paramsUid := params["xuid"]
 
-	if err := h.bduc.DeletePermission(paramsUid, paramsName); err != nil {
+	if err := h.bduc.DeletePermission(paramsUid, paramsWorld); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -238,13 +248,56 @@ func (h *BedrockHandler) DeletePermissionPlayer(w http.ResponseWriter, r *http.R
 
 func (h *BedrockHandler) GetLogsServer(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
-	paramsName := params["name"]
+	paramsWorld := params["world"]
 
-	logs, err := h.bduc.GetServerLogs(paramsName)
+	logs, err := h.bduc.GetServerLogs(paramsWorld)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	utils.WriteJSON(w, http.StatusOK, logs)
+}
+
+func (h *BedrockHandler) CreatePriority(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	paramsWorld := params["world"]
+
+	var req dto.Allowlist
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.bduc.CreatePriority(&req, paramsWorld); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, nil)
+}
+
+func (h *BedrockHandler) DeletePriority(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	paramsWorld := params["world"]
+	paramsXuid := params["xuid"]
+
+	if err := h.bduc.DeletePriority(paramsXuid, paramsWorld); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, nil)
+}
+
+func (h *BedrockHandler) GetPriority(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	paramsWorld := params["world"]
+
+	response, err := h.bduc.GetPriority(paramsWorld)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, response)
 }

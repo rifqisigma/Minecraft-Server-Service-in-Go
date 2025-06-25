@@ -13,7 +13,7 @@ func main() {
 		log.Fatalf("konek db err :%s", err)
 	}
 
-	if err := db.AutoMigrate(&model.User{}, &model.WorldServer{}, &model.MemberRole{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.WorldServer{}, &model.Member{}); err != nil {
 		log.Fatalf("migrate dbe rr :%s", err)
 	}
 

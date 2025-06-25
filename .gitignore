@@ -1,3 +1,5 @@
-config/
-data/servers/
+config/world_template/*
+!config/world_template/.gitkeep
+data/servers/*
+!data/servers/.gitkeep
 .env

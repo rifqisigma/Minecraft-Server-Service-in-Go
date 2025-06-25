@@ -22,6 +22,7 @@ type BedrockServer struct {
 	Writer *bufio.Writer
 	Port   int
 	Name   string
+	Id     uint
 	Logs   []string
 	LogMu  sync.RWMutex
 }
@@ -32,12 +33,12 @@ type BedrockUC interface {
 	StopServer(name string) error
 	StartServer(req *dto.StartServerReq) error
 	DeleteWorld(user uint, name string) error
-	EditWorld(req *dto.ServerParams, idWorld uint) error
+	EditWorld(req *dto.ServerParams, idWorld uint, nameOld string) error
 	GetWorlds() ([]dto.GetWorlds, error)
 	GetWorldAndPlayers(name string) (*dto.GetWorldAndPlayers, error)
-
-	//command
-	SendCommand(name string, command string) error
+	SendCommandforAPI(name string, command string) error
+	CreatePriority(req *dto.Allowlist, worldName string) error
+	DeletePriority(xuid, worldName string) error
 
 	//player
 	KickPlayer(name string, playerName string) error
@@ -46,11 +47,13 @@ type BedrockUC interface {
 	DeletePermission(xuid, worldName string) error
 	GetPermissionPlayer(name string) ([]dto.PermissionPlayer, error)
 	GetServerLogs(name string) ([]string, error)
+	GetPriority(name string) ([]dto.Allowlist, error)
 
 	//non import
+	handleLogLine(line string, worldId uint)
 	copyDir(src, dst string) error
 	copyFile(src, dst string) error
-	modifyProperties(req *dto.ServerParams) error
+	modifyProperties(req *dto.ServerParams, worldname string) error
 }
 
 type bedrockUC struct {
@@ -69,29 +72,27 @@ func NewBedrockUC(bedRepo repository.BedrockRepo) BedrockUC {
 }
 
 func (u *bedrockUC) CreateServer(req *dto.ServerParams) error {
-	src := "config/"
+	src := "config/world_template/"
 	dst := filepath.Join("data/servers", req.Name)
 
-	if err := os.RemoveAll(dst); err != nil {
-		return err
-	}
-
-	if err := u.copyDir(src, dst); err != nil {
-		return err
-	}
-
-	world, err := u.bedRepo.CreateWorld(req)
+	worlddb, err := u.bedRepo.CreateWorld(req)
 	if err != nil {
 		return err
 	}
-
-	if err := u.modifyProperties(world); err != nil {
-		return err
+	if err := os.RemoveAll(dst); err != nil {
+		return fmt.Errorf("remove old server failed: %w", err)
 	}
 
-	log.Printf("server %s is create with port %v", req.Name, req.Port)
-	return nil
+	if err := u.copyDir(src, dst); err != nil {
+		return fmt.Errorf("copy template failed: %w", err)
+	}
 
+	if err := u.modifyProperties(worlddb, worlddb.Name); err != nil {
+		return fmt.Errorf("modify properties failed: %w", err)
+	}
+
+	log.Printf("Server %s created on port %d", req.Name, req.Port)
+	return nil
 }
 
 func (u *bedrockUC) StartServer(req *dto.StartServerReq) error {
@@ -107,49 +108,59 @@ func (u *bedrockUC) StartServer(req *dto.StartServerReq) error {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		stdin.Close()
 		return err
 	}
+
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		stdin.Close()
+		stdout.Close()
 		return err
 	}
+
 	combined := io.MultiReader(stdout, stderr)
 	reader := io.TeeReader(combined, os.Stdout)
 
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		stdout.Close()
+		stderr.Close()
 		return err
 	}
 
-	writer := bufio.NewWriter(stdin)
-
-	u.s.Lock()
-	u.servers[req.Name] = &BedrockServer{
+	server := &BedrockServer{
 		Cmd:    cmd,
 		Writer: bufio.NewWriter(stdin),
 		Port:   req.Port,
 		Name:   dst,
+		Id:     req.WorldId,
+		Logs:   make([]string, 0, 1001),
 	}
+
+	u.s.Lock()
+	u.servers[req.Name] = server
 	u.s.Unlock()
 
 	go func() {
+		defer func() {
+			stdin.Close()
+			stdout.Close()
+			stderr.Close()
+		}()
+
 		scanner := bufio.NewScanner(reader)
 		for scanner.Scan() {
 			line := scanner.Text()
-			u.HandleLogLine(line, writer, req.WorldId)
 
-			u.s.RLock()
-			server := u.servers[req.Name]
-			u.s.RUnlock()
+			u.handleLogLine(line, req.WorldId)
 
-			if server != nil {
-				server.LogMu.Lock()
-				if len(server.Logs) > 1000 {
-					server.Logs = server.Logs[1:]
-				}
-				server.Logs = append(server.Logs, line)
-				server.LogMu.Unlock()
+			server.LogMu.Lock()
+			if len(server.Logs) > 1000 {
+				server.Logs = server.Logs[1:]
 			}
-
+			server.Logs = append(server.Logs, line)
+			server.LogMu.Unlock()
 		}
 	}()
 
@@ -157,8 +168,10 @@ func (u *bedrockUC) StartServer(req *dto.StartServerReq) error {
 	return nil
 }
 
-func (u *bedrockUC) HandleLogLine(line string, writer *bufio.Writer, worldId uint) {
+func (u *bedrockUC) handleLogLine(line string, worldId uint) {
+
 	if strings.Contains(line, "Player connected:") {
+		log.Println("add player")
 		parts := strings.Split(line, "Player connected:")
 		if len(parts) < 2 {
 			return
@@ -169,71 +182,12 @@ func (u *bedrockUC) HandleLogLine(line string, writer *bufio.Writer, worldId uin
 			return
 		}
 
-		name := strings.TrimSpace(split[0])
 		xuid := strings.TrimSpace(split[1])
-		err := u.bedRepo.EnsurePlayerExists(xuid, name, worldId)
+		err := u.bedRepo.EnsurePlayerExists(xuid, worldId)
 		if err != nil {
 			return
 		}
 		return
-
-	} else if strings.Contains(line, "Player Spawned:") {
-		parts := strings.Split(line, "Player Spawned:")
-		if len(parts) < 2 {
-			return
-		}
-		data := strings.TrimSpace(parts[1])
-		split := strings.Split(data, " xuid: ")
-		if len(split) < 2 {
-			return
-		}
-
-		name := strings.TrimSpace(split[0])
-		xuid := strings.TrimSpace(strings.Split(split[1], ",")[0])
-		role := u.bedRepo.GetPlayerRoleByName(xuid)
-		if role == "" {
-			role = "bocil"
-		}
-		roleUpper := strings.ToUpper(role)
-
-		playerName := name
-		if strings.Contains(name, " ") {
-			playerName = fmt.Sprintf(`"%s"`, name)
-		}
-
-		cmds := []string{
-			fmt.Sprintf(`tag %s add %s`, playerName, roleUpper),
-			fmt.Sprintf(`scoreboard players set %s role 1`, playerName),
-			fmt.Sprintf(`tellraw @a {"rawtext":[{"text":"[%s] %s joined the server"}]}`, roleUpper, name),
-		}
-		for _, cmd := range cmds {
-			writer.WriteString(cmd + "\n")
-			writer.Flush()
-		}
-		return
-
-	} else if strings.Contains(line, "] [Chat]") {
-		parts := strings.Split(line, "] [Chat]")
-		if len(parts) < 2 {
-			return
-		}
-		msg := strings.TrimSpace(parts[1])
-		sep := strings.SplitN(msg, ": ", 2)
-		if len(sep) < 2 {
-			return
-		}
-		name := strings.TrimSpace(sep[0])
-		message := sep[1]
-
-		role := u.bedRepo.GetPlayerRoleByName(name)
-		if role == "" {
-			role = "bocil"
-		}
-		roleUpper := strings.ToUpper(role)
-
-		tellraw := fmt.Sprintf(`tellraw @a {"rawtext":[{"text":"[%s] %s: %s"}]}`, roleUpper, name, message)
-		writer.WriteString(tellraw + "\n")
-		writer.Flush()
 
 	}
 }
@@ -257,25 +211,6 @@ func (u *bedrockUC) StopServer(name string) error {
 	return nil
 }
 
-func (u *bedrockUC) SendCommand(name string, command string) error {
-	u.s.RLock()
-	server, ok := u.servers[name]
-	u.s.RUnlock()
-	if !ok {
-		return fmt.Errorf("server %s not found", name)
-	}
-
-	if server.Writer == nil {
-		return fmt.Errorf("writer not initialized for server %s", name)
-	}
-
-	_, err := server.Writer.WriteString(command + "\n")
-	if err != nil {
-		return err
-	}
-	return server.Writer.Flush()
-}
-
 func (u *bedrockUC) DeleteWorld(user uint, name string) error {
 	trgt := filepath.Join("data/servers", name)
 	if err := os.RemoveAll(trgt); err != nil {
@@ -286,12 +221,12 @@ func (u *bedrockUC) DeleteWorld(user uint, name string) error {
 		return err
 	}
 
-	fmt.Printf("%v menghapus server berna,ma %s", user, name)
+	fmt.Printf("%v menghapus server bernama %s", user, name)
 	return nil
 }
 
-func (u *bedrockUC) EditWorld(req *dto.ServerParams, idWorld uint) error {
-	if err := u.modifyProperties(req); err != nil {
+func (u *bedrockUC) EditWorld(req *dto.ServerParams, idWorld uint, nameOld string) error {
+	if err := u.modifyProperties(req, nameOld); err != nil {
 		return err
 	}
 	if err := u.bedRepo.EditWorld(req, idWorld); err != nil {
@@ -309,8 +244,8 @@ func (u *bedrockUC) copyDir(src, dst string) error {
 
 		relPath, _ := filepath.Rel(src, path)
 		dstPath := filepath.Join(dst, relPath)
-		fmt.Println("Rel:", relPath)
-		fmt.Println("Dst:", dstPath)
+		log.Println("Rel:", relPath)
+		log.Println("Dst:", dstPath)
 
 		if info.IsDir() {
 			return os.MkdirAll(dstPath, info.Mode())
@@ -339,8 +274,8 @@ func (u *bedrockUC) copyFile(src, dst string) error {
 	return err
 }
 
-func (u *bedrockUC) modifyProperties(req *dto.ServerParams) error {
-	dst := filepath.Join("data/servers", req.Name, "server.properties")
+func (u *bedrockUC) modifyProperties(req *dto.ServerParams, worldname string) error {
+	dst := filepath.Join("data/servers", worldname, "server.properties")
 	input, err := os.ReadFile(dst)
 	if err != nil {
 		return err
@@ -353,6 +288,11 @@ func (u *bedrockUC) modifyProperties(req *dto.ServerParams) error {
 		//name
 		if req.Name != "" && strings.HasPrefix(line, "server-name=") {
 			lines[i] = "server-name=" + req.Name
+		}
+
+		//name
+		if req.Name != "" && strings.HasPrefix(line, "level-name=") {
+			lines[i] = "level-name=" + req.Name
 		}
 		//game mode
 		if req.GameMode != "" && strings.HasPrefix(line, "gamemode=") {
@@ -395,12 +335,39 @@ func (u *bedrockUC) modifyProperties(req *dto.ServerParams) error {
 	return os.WriteFile(dst, []byte(output), 0644)
 }
 
+func (u *bedrockUC) SendCommandforAPI(name string, command string) error {
+	u.s.RLock()
+	server, ok := u.servers[name]
+	u.s.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %s not found", name)
+	}
+
+	if server.Writer == nil {
+		return fmt.Errorf("writer not initialized for server %s", name)
+	}
+
+	_, err := server.Writer.WriteString(command + "\n")
+	if err != nil {
+		return err
+	}
+	return server.Writer.Flush()
+}
+
 func (u *bedrockUC) KickPlayer(name string, playerName string) error {
-	return u.SendCommand(name, "kick "+playerName)
+	kick := fmt.Sprintf(`kick "%s"`, playerName)
+	if err := u.SendCommandforAPI(name, kick); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (u *bedrockUC) BanPlayer(name string, playerName string) error {
-	return u.SendCommand(name, "ban "+playerName)
+	ban := fmt.Sprintf(`ban "%s"`, playerName)
+	if err := u.SendCommandforAPI(name, ban); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (u *bedrockUC) CreateOrUpdatePermissions(req *dto.PermissionPlayer, worldName string) error {
@@ -442,6 +409,80 @@ func (u *bedrockUC) CreateOrUpdatePermissions(req *dto.PermissionPlayer, worldNa
 
 }
 
+func (u *bedrockUC) CreatePriority(req *dto.Allowlist, worldName string) error {
+	var resultFile []dto.Allowlist
+
+	path := filepath.Join("data/servers", worldName, "allowlist.json")
+	result, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(result, &resultFile); err != nil {
+		return err
+	}
+
+	found := false
+
+	for i, r := range resultFile {
+		if r.Xuid == req.Xuid {
+			resultFile[i].Priority = req.Priority
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		resultFile = append(resultFile, dto.Allowlist{
+			Xuid:     req.Xuid,
+			Name:     req.Name,
+			Priority: req.Priority,
+		})
+	}
+
+	output, err := json.MarshalIndent(resultFile, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, output, 0644)
+
+}
+
+func (u *bedrockUC) DeletePriority(xuid, worldName string) error {
+	var resultFile []dto.Allowlist
+
+	path := filepath.Join("data/servers", worldName, "allowlist.json")
+	result, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(result, &resultFile); err != nil {
+		return err
+	}
+
+	var newPriority []dto.Allowlist
+	for _, r := range resultFile {
+		if r.Xuid != xuid {
+			continue
+		}
+		newPriority = append(newPriority, dto.Allowlist{
+			Xuid:     r.Xuid,
+			Name:     r.Name,
+			Priority: r.Priority,
+		})
+	}
+
+	output, err := json.MarshalIndent(newPriority, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, output, 0644)
+
+}
+
 func (u *bedrockUC) DeletePermission(xuid, worldName string) error {
 	var resultFile []dto.PermissionPlayer
 
@@ -458,12 +499,12 @@ func (u *bedrockUC) DeletePermission(xuid, worldName string) error {
 	var newPermissions []dto.PermissionPlayer
 	for _, r := range resultFile {
 		if r.Xuid != xuid {
-			newPermissions = append(newPermissions, dto.PermissionPlayer{
-				Xuid:       r.Xuid,
-				Permission: r.Permission,
-			})
-			break
+			continue
 		}
+		newPermissions = append(newPermissions, dto.PermissionPlayer{
+			Xuid:       r.Xuid,
+			Permission: r.Permission,
+		})
 	}
 	output, err := json.MarshalIndent(newPermissions, "", "  ")
 	if err != nil {
@@ -471,6 +512,23 @@ func (u *bedrockUC) DeletePermission(xuid, worldName string) error {
 	}
 
 	return os.WriteFile(path, output, 0644)
+
+}
+
+func (u *bedrockUC) GetPriority(name string) ([]dto.Allowlist, error) {
+	var resultFile []dto.Allowlist
+
+	path := filepath.Join("data/servers", name, "allowlist.json")
+	result, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(result, &resultFile); err != nil {
+		return nil, err
+	}
+
+	return resultFile, nil
 
 }
 
@@ -494,6 +552,7 @@ func (u *bedrockUC) GetPermissionPlayer(name string) ([]dto.PermissionPlayer, er
 func (u *bedrockUC) GetWorlds() ([]dto.GetWorlds, error) {
 	return u.bedRepo.GetWorlds()
 }
+
 func (u *bedrockUC) GetWorldAndPlayers(name string) (*dto.GetWorldAndPlayers, error) {
 	return u.bedRepo.GetWorldAndPlayers(name)
 }
@@ -505,7 +564,7 @@ func (u *bedrockUC) GetServerLogs(name string) ([]string, error) {
 	u.s.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("gagal lock/unlock async servers")
+		return nil, fmt.Errorf("gagal lock/unlock async server")
 	}
 
 	server.LogMu.RLock()

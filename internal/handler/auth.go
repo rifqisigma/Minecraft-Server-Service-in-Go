@@ -40,9 +40,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	utils.WriteJSON(w, http.StatusOK, map[string]string{
-		"message": "link verification has been send or your email",
-	})
+	utils.WriteJSON(w, http.StatusOK, nil)
 
 }
 

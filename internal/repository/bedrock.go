@@ -15,8 +15,7 @@ type BedrockRepo interface {
 	DeleteWorld(user uint, name string) error
 	GetWorlds() ([]dto.GetWorlds, error)
 	GetWorldAndPlayers(name string) (*dto.GetWorldAndPlayers, error)
-	EnsurePlayerExists(xuid, name string, worldId uint) error
-	GetPlayerRoleByName(name string) string
+	EnsurePlayerExists(xuid string, worldId uint) error
 }
 
 type bedrockRepo struct {
@@ -113,16 +112,16 @@ func (r *bedrockRepo) DeleteWorld(creator uint, name string) error {
 	return nil
 }
 
-func (u *bedrockRepo) EnsurePlayerExists(xuid, name string, worldId uint) error {
-	err := u.db.Where("xuid = ?", xuid).Error
+func (u *bedrockRepo) EnsurePlayerExists(xuid string, worldId uint) error {
+	var count int64
+	err := u.db.Debug().Model(&model.Member{}).Where("xuid = ? AND world_server_id = ?", xuid, worldId).Count(&count).Error
 	if err != nil {
 		return err
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		if err := u.db.Create(&model.MemberRole{
-			Xuid: xuid,
-			Name: name,
-			Role: "bocil",
+	if count <= 0 {
+		if err := u.db.Debug().Create(&model.Member{
+			Xuid:          xuid,
+			WorldServerId: worldId,
 		}).Error; err != nil {
 			return err
 		}
@@ -131,25 +130,17 @@ func (u *bedrockRepo) EnsurePlayerExists(xuid, name string, worldId uint) error 
 	return nil
 }
 
-func (r *bedrockRepo) GetPlayerRoleByName(name string) string {
-	var role string
-	err := r.db.Where("xuid = ?", name).Pluck("role", role)
-	if err != nil {
-		return ""
-	}
-	return role
-}
-
 func (r *bedrockRepo) GetWorlds() ([]dto.GetWorlds, error) {
 	var result []model.WorldServer
-	if err := r.db.Model(&model.WorldServer{}).Preload("MemberRole").Find(&result).Error; err != nil {
+	if err := r.db.Model(&model.WorldServer{}).Preload("MemberRole").Preload("User").Find(&result).Error; err != nil {
 		return nil, err
 	}
 
-	response := make([]dto.GetWorlds, len(result))
+	var response []dto.GetWorlds
 
 	for _, r := range result {
 		response = append(response, dto.GetWorlds{
+			ID:      r.ID,
 			Creator: r.User.Username,
 			Name:    r.Name,
 			Port:    r.Port,
@@ -164,19 +155,19 @@ func (r *bedrockRepo) GetWorlds() ([]dto.GetWorlds, error) {
 
 func (r *bedrockRepo) GetWorldAndPlayers(name string) (*dto.GetWorldAndPlayers, error) {
 	var result model.WorldServer
-	if err := r.db.Model(&model.WorldServer{}).Where("name = ?", name).Preload("MemberRole").First(&result).Error; err != nil {
+	if err := r.db.Model(&model.WorldServer{}).Where("name = ?", name).Preload("MemberRole").Preload("User").First(&result).Error; err != nil {
 		return nil, err
 	}
 
 	var responsePlayers []dto.Player
 	for _, r := range result.MemberRole {
 		responsePlayers = append(responsePlayers, dto.Player{
-			Name: r.Name,
-			Role: r.Role,
+			Xuid: r.Xuid,
 		})
 	}
 
 	return &dto.GetWorldAndPlayers{
+		ID:                      result.ID,
 		Creator:                 result.User.Username,
 		Name:                    result.Name,
 		Port:                    result.Port,

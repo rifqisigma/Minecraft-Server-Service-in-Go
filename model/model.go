@@ -21,13 +21,11 @@ type WorldServer struct {
 	DefaultPermissionPlayer string `gorm:"default:member"`
 
 	//fk
-	User       *User        `gorm:"foreignKey:CreatorId;constraint:OnDelete:SET NULL"`
-	MemberRole []MemberRole `gorm:"foreignKey:WorldServerId;constraint:OnDelete:CASCADE"`
+	User       *User    `gorm:"foreignKey:CreatorId;constraint:OnDelete:SET NULL"`
+	MemberRole []Member `gorm:"foreignKey:WorldServerId;constraint:OnDelete:CASCADE"`
 }
-type MemberRole struct {
-	ID   uint   `gorm:"primaryKey"`
-	Name string `gorm:"not null"`
-	Role string `gorm:"not null;default:bocil"`
+type Member struct {
+	ID   uint `gorm:"primaryKey"`
 	Xuid string
 
 	WorldServerId uint `gorm:"index"`

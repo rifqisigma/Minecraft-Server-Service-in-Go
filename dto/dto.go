@@ -34,7 +34,14 @@ type PermissionPlayer struct {
 	Permission string `json:"permission"`
 }
 
+type Allowlist struct {
+	Xuid     string `json:"xuid"`
+	Name     string `json:"name"`
+	Priority bool   `json:"ignoresPlayerLimit"`
+}
+
 type GetWorlds struct {
+	ID      uint   `json:"id"`
 	Creator string `json:"creator"`
 	Name    string `json:"name"`
 	Port    int    `json:"port"`
@@ -42,6 +49,7 @@ type GetWorlds struct {
 }
 
 type GetWorldAndPlayers struct {
+	ID                      uint     `json:"id"`
 	Creator                 string   `json:"creator"`
 	Name                    string   `json:"name"`
 	Port                    int      `json:"port"`
@@ -56,6 +64,5 @@ type GetWorldAndPlayers struct {
 }
 
 type Player struct {
-	Name string `json:"name"`
-	Role string `json:"role"`
+	Xuid string `json:"xuid"`
 }
