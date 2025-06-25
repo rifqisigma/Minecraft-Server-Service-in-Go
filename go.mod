@@ -3,7 +3,6 @@ module minecrat_go
 go 1.24.0
 
 require (
-	github.com/Tnze/go-mc v1.20.2
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/gorilla/mux v1.8.1
 	github.com/joho/godotenv v1.5.1

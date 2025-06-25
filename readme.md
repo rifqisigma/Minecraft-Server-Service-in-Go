@@ -22,5 +22,7 @@ Sistem manajemen server **Minecraft Bedrock** berbasis **Go (Golang)** dengan pe
 
 2. Unduh server bedrock sesuai OS kamu
 
-3. Ekstrak semua file hasil unduhan ke:
+3. buat folder `config/world_tamplate` dan `data_servers`
+
+4. Ekstrak semua file hasil unduhan ke `config/world_tamplate`
 
